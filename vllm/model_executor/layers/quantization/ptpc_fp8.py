@@ -37,9 +37,9 @@ class PTPCFp8Config(Fp8Config):
         if not current_platform.is_rocm():
             raise ValueError("ptpc_fp8 quantization is supported only on ROCm.")
 
-        if not current_platform.has_device_capability(94):
+        if not current_platform.supports_fp8():
             raise ValueError(
-                "ptpc_fp8 quantization is supported only on AMD Instinct MI300 GPUs and newer."  # noqa: E501
+                "ptpc_fp8 quantization requires FP8 support (MI300+, RDNA4+, or CUDA 8.9+)."  # noqa: E501
             )
         if activation_scheme == "static":
             raise ValueError("ptpc_fp8 as of now only support dynamic quantization.")

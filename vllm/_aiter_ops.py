@@ -5,7 +5,7 @@ from collections.abc import Callable
 
 import torch
 from torch._ops import OpOverload
-
+from vllm.platforms.rocm import on_gfx12x
 import vllm.envs as envs
 from vllm.platforms import current_platform
 from vllm.utils.torch_utils import direct_register_custom_op
@@ -50,9 +50,9 @@ def is_aiter_found_and_supported() -> bool:
     VLLM_ROCM_USE_AITER=0, while preventing unwanted JIT warnings for auto-discovery.
     """
     if current_platform.is_rocm() and IS_AITER_FOUND:
-        from vllm.platforms.rocm import on_gfx9
+        from vllm.platforms.rocm import on_gfx9, on_gfx12x
 
-        return on_gfx9()
+        return on_gfx9() or on_gfx12x()
     return False
 
 
@@ -1769,11 +1769,12 @@ class rocm_aiter_ops:
         group_size: int = 128,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         assert group_size == 128, "Group size must be 128"
+
         return torch.ops.vllm.rocm_aiter_group_fp8_quant(input_2d, group_size)
 
     @staticmethod
     def is_triton_gemm_w8a8_tuned(n: int, k: int) -> bool:
-        return (n, k) in [
+        shapes = [
             (1024, 8192),
             (2112, 7168),
             (3072, 1536),
@@ -1910,7 +1911,70 @@ class rocm_aiter_ops:
         even when VLLM_ROCM_USE_AITER=0.
 
         Note: This performs lazy import of aiter.flash_attn_varlen_func
+        For gfx12x (RDNA4) GPUs, uses mha_v3 Triton kernel for better performance.
         """
+        # Check if we should use mha_v3 for gfx12x
+        # mha_v3 provides better performance on RDNA4 architectures
+        if on_gfx12x():
+            # Check if mha_v3 can be used (no alibi, no dropout, no custom window size)
+            # window_size=None means infinite context window (default behavior)
+            can_use_mha_v3 = (
+                alibi_slopes is None
+                and dropout_p == 0.0
+                and (window_size is None or window_size == (-1, -1))
+                and not return_lse  # mha_v3 doesn't support returning LSE
+            )
+
+            if can_use_mha_v3:
+                try:
+                    from aiter.ops.triton.attention.mha_v3 import (
+                        flash_attn_varlen_func as mha_v3_varlen_func,
+                    )
+
+                    # mha_v3 has a different signature - convert parameters
+                    # mha_v3 expects window_size as a tuple, default is (-1, -1) for infinite window
+                    mha_v3_window_size = (
+                        (-1, -1) if window_size is None else window_size
+                    )
+
+                    mha_v3_out = mha_v3_varlen_func(
+                        q=q,
+                        k=k,
+                        v=v,
+                        cu_seqlens_q=cu_seqlens_q,
+                        cu_seqlens_k=cu_seqlens_k,
+                        max_seqlen_q=max_seqlen_q,
+                        max_seqlen_k=max_seqlen_k,
+                        softmax_scale=softmax_scale,
+                        causal=causal,
+                        q_descale=None,
+                        k_descale=None,
+                        v_descale=None,
+                        window_size=mha_v3_window_size,
+                        attention_chunk=0,
+                        softcap=0.0,
+                        deterministic=False,
+                        sm_margin=0,
+                    )
+
+                    if out is not None:
+                        out.copy_(mha_v3_out)
+                        return out
+                    return mha_v3_out
+
+                except Exception as e:
+                    # Fall through to default implementation if mha_v3 fails
+                    # Log the error for debugging (only once to avoid spam)
+                    import warnings
+
+                    warnings.warn(
+                        f"mha_v3 failed, falling back to default: {e}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    pass
+
+        # Default: use standard flash_attn_varlen_func (CK-based or Triton-based)
         from aiter import flash_attn_varlen_func
 
         return flash_attn_varlen_func(
