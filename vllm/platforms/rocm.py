@@ -373,6 +373,7 @@ class RocmPlatform(Platform):
         "gguf",
         "quark",
         "mxfp4",
+        "moe_wna16",
         "petit_nvfp4",
         "torchao",
         "bitsandbytes",
