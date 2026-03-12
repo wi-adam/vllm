@@ -420,6 +420,7 @@ class RocmPlatform(Platform):
         "quark",
         "mxfp4",
         "mxfp8",
+        "moe_wna16",
         "torchao",
         "bitsandbytes",
         "modelopt",
