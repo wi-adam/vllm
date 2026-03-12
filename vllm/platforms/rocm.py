@@ -419,6 +419,7 @@ class RocmPlatform(Platform):
         "quark",
         "mxfp4",
         "gpt_oss_mxfp4",
+        "moe_wna16",
         "torchao",
         "bitsandbytes",
         "modelopt_fp4",
