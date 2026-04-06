@@ -228,6 +228,10 @@ def on_gfx1x() -> bool:
     return _ON_GFX1X
 
 
+def on_gfx12x() -> bool:
+    return _ON_GFX12
+
+
 def on_mi3xx() -> bool:
     return _ON_MI3XX
 
