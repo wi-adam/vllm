@@ -406,7 +406,7 @@ class RocmPlatform(Platform):
         # TurboQuant KV cache: route directly to TQ backend
         kv_cache_dtype = attn_selector_config.kv_cache_dtype
         if kv_cache_dtype is not None and kv_cache_dtype.startswith("tq-"):
-            from vllm.v1.attention.backends.utils import AttentionBackendEnum
+            from vllm.v1.attention.backends.registry import AttentionBackendEnum
             return [(AttentionBackendEnum.TURBOQUANT, 0)], {}
 
         backend_priorities = _get_backend_priorities(
