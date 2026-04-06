@@ -2133,7 +2133,7 @@ class rocm_aiter_ops:
 
     @staticmethod
     def is_triton_gemm_w8a8_tuned(n: int, k: int) -> bool:
-        return (n, k) in [
+        shapes = [
             (1024, 8192),
             (2112, 7168),
             (3072, 1536),
@@ -2289,6 +2289,60 @@ class rocm_aiter_ops:
 
         Note: This performs lazy import of aiter.flash_attn_varlen_func
         """
+        # Use mha_v3 for gfx12x (RDNA4) — better performance via Triton
+        from vllm.platforms.rocm import on_gfx12x
+        if on_gfx12x():
+            can_use_mha_v3 = (
+                alibi_slopes is None
+                and dropout_p == 0.0
+                and (window_size is None or window_size == (-1, -1))
+                and not return_lse
+            )
+
+            if can_use_mha_v3:
+                try:
+                    from aiter.ops.triton.attention.mha_v3 import (
+                        flash_attn_varlen_func as mha_v3_varlen_func,
+                    )
+
+                    mha_v3_window_size = (
+                        (-1, -1) if window_size is None else window_size
+                    )
+
+                    mha_v3_out = mha_v3_varlen_func(
+                        q=q,
+                        k=k,
+                        v=v,
+                        cu_seqlens_q=cu_seqlens_q,
+                        cu_seqlens_k=cu_seqlens_k,
+                        max_seqlen_q=max_seqlen_q,
+                        max_seqlen_k=max_seqlen_k,
+                        softmax_scale=softmax_scale,
+                        causal=causal,
+                        q_descale=None,
+                        k_descale=None,
+                        v_descale=None,
+                        window_size=mha_v3_window_size,
+                        attention_chunk=0,
+                        softcap=0.0,
+                        deterministic=False,
+                        sm_margin=0,
+                    )
+
+                    if out is not None:
+                        out.copy_(mha_v3_out)
+                        return out
+                    return mha_v3_out
+
+                except Exception as e:
+                    import warnings
+                    warnings.warn(
+                        f"mha_v3 failed, falling back to default: {e}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+
+
         from aiter import flash_attn_varlen_func
 
         return flash_attn_varlen_func(
