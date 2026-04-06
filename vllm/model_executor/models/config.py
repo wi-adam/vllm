@@ -86,12 +86,17 @@ class Gemma4Config(VerifyAndUpdateConfig):
         # the config carries global_head_dim but all layers can still use
         # the same FA backend.
         max_head_dim = max(head_dim or 0, global_head_dim or 0)
+        kv_cache_dtype = vllm_config.cache_config.cache_dtype
+        tq_active = kv_cache_dtype is not None and kv_cache_dtype.startswith(
+            "tq-"
+        )
         if (
             head_dim is not None
             and global_head_dim is not None
             and head_dim != global_head_dim
             and max_head_dim > 256
             and vllm_config.attention_config.backend is None
+            and not tq_active
         ):
             from vllm.v1.attention.backends.registry import (
                 AttentionBackendEnum,

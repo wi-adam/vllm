@@ -44,6 +44,9 @@ class IntermediateTensors:
         elif isinstance(key, slice):
             return self.__class__({k: v[key] for k, v in self.tensors.items()})
 
+    def get(self, key: str, default=None):
+        return self.tensors.get(key, default)
+
     def __setitem__(self, key: str, value: torch.Tensor):
         self.tensors[key] = value
 
