@@ -394,27 +394,15 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         layer: "AttentionLayer",
     ):
         """Quantize + store via fused Triton kernel."""
-        import sys
-        try:
-            triton_tq_store(
-                key, value, kv_cache, slot_mapping,
-                layer._tq_PiT, centroids, layer._tq_midpoints,
-                mse_bits=self.tq_config.key_mse_bits,
-                key_packed_size=self.tq_config.key_packed_size,
-                value_quant_bits=self.tq_config.effective_value_quant_bits,
-                value_packed_size=self.tq_config.value_packed_size,
-                key_fp8=self.tq_config.key_fp8,
-            )
-        except Exception as e:
-            print(f"TQ STORE CRASH: {e}", file=sys.stderr, flush=True)
-            print(f"  key: {key.shape} {key.dtype}", file=sys.stderr, flush=True)
-            print(f"  value: {value.shape} {value.dtype}", file=sys.stderr, flush=True)
-            print(f"  kv_cache: {kv_cache.shape} {kv_cache.dtype}", file=sys.stderr, flush=True)
-            print(f"  slot_mapping: {slot_mapping.shape}", file=sys.stderr, flush=True)
-            print(f"  config: mse_bits={self.tq_config.key_mse_bits} key_fp8={self.tq_config.key_fp8}", file=sys.stderr, flush=True)
-            import traceback
-            traceback.print_exc(file=sys.stderr)
-            raise
+        triton_tq_store(
+            key, value, kv_cache, slot_mapping,
+            layer._tq_PiT, centroids, layer._tq_midpoints,
+            mse_bits=self.tq_config.key_mse_bits,
+            key_packed_size=self.tq_config.key_packed_size,
+            value_quant_bits=self.tq_config.effective_value_quant_bits,
+            value_packed_size=self.tq_config.value_packed_size,
+            key_fp8=self.tq_config.key_fp8,
+        )
 
     # ------------------------------------------------------------------ #
     #  Mixed batch: split prefill + decode and dispatch separately         #
