@@ -3058,6 +3058,8 @@ class GPUModelRunner(
         if sync_self:
             assert intermediate_tensors is not None
             for k, v in intermediate_tensors.items():
+                if v is None:
+                    continue
                 is_scattered = k == "residual" and is_rs
                 copy_len = num_tokens // tp if is_scattered else num_tokens
                 self.intermediate_tensors[k][:copy_len].copy_(
