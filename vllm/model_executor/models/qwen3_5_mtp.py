@@ -31,6 +31,7 @@ from vllm.transformers_utils.configs.qwen3_5_moe import Qwen3_5MoeTextConfig
 from .interfaces import (
     MultiModalEmbeddings,
     SupportsMultiModal,
+    SupportsPP,
     _require_is_multimodal,
 )
 from .utils import (
@@ -129,19 +130,20 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
         inputs_embeds: torch.Tensor | None = None,
         spec_step_idx: int = 0,
     ) -> torch.Tensor:
-        if get_pp_group().is_first_rank:
-            if inputs_embeds is None:
-                inputs_embeds = self.embed_input_ids(input_ids)
-            assert hidden_states.shape[-1] == inputs_embeds.shape[-1]
-            inputs_embeds = self.pre_fc_norm_embedding(inputs_embeds)
-            hidden_states = self.pre_fc_norm_hidden(hidden_states)
-            hidden_states = torch.cat([inputs_embeds, hidden_states], dim=-1)
-            hidden_states = self.fc(hidden_states)
-            residual = None
-        else:
-            assert intermediate_tensors is not None
-            hidden_states = intermediate_tensors["hidden_states"]
-            residual = intermediate_tensors["residual"]
+        # MTP draft runs end-to-end on a single PP rank — the runner gates
+        # self.drafter creation to is_last_rank (gpu_model_runner.py), so
+        # this forward never participates in cross-stage handoff. Earlier
+        # PP-rank branching was a latent bug: on PP=2 last rank,
+        # is_first_rank=False would skip the FC fusion and assert on a
+        # missing intermediate_tensors.
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_input_ids(input_ids)
+        assert hidden_states.shape[-1] == inputs_embeds.shape[-1]
+        inputs_embeds = self.pre_fc_norm_embedding(inputs_embeds)
+        hidden_states = self.pre_fc_norm_hidden(hidden_states)
+        hidden_states = torch.cat([inputs_embeds, hidden_states], dim=-1)
+        hidden_states = self.fc(hidden_states)
+        residual = None
 
         current_step_idx = spec_step_idx % self.num_mtp_layers
         hidden_states, residual = self.layers[current_step_idx](
@@ -149,11 +151,6 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
             hidden_states=hidden_states,
             residual=residual,
         )
-
-        if not get_pp_group().is_last_rank:
-            return IntermediateTensors(
-                {"hidden_states": hidden_states, "residual": residual}
-            )
 
         hidden_states, _ = self.norm(hidden_states, residual)
         return hidden_states
@@ -346,7 +343,7 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
         "hidden_states": 0,
     }
 )
-class Qwen3_5MTP(nn.Module, SupportsMultiModal):
+class Qwen3_5MTP(nn.Module, SupportsPP, SupportsMultiModal):
     packed_modules_mapping = {
         "qkv_proj": [
             "q_proj",
@@ -387,6 +384,12 @@ class Qwen3_5MTP(nn.Module, SupportsMultiModal):
             self.lm_head = PPMissingLayer()
 
         self.logits_processor = LogitsProcessor(config.vocab_size)
+        # Required by SupportsPP. The runner gates drafter creation to the
+        # last PP rank so this is never actually invoked, but the engine's
+        # is_pp_supported_model check inspects this attribute.
+        self.make_empty_intermediate_tensors = (
+            self.model.make_empty_intermediate_tensors
+        )
 
     def embed_input_ids(
         self,
