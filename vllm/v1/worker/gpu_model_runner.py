@@ -5530,11 +5530,18 @@ class GPUModelRunner(
             else:
                 hidden_states = outputs
 
-            if self.speculative_config and (
-                self.speculative_config.use_eagle()
-                or self.speculative_config.uses_draft_model()
-                or self.speculative_config.uses_extract_hidden_states()
+            if (
+                self.speculative_config
+                and get_pp_group().is_last_rank
+                and (
+                    self.speculative_config.use_eagle()
+                    or self.speculative_config.uses_draft_model()
+                    or self.speculative_config.uses_extract_hidden_states()
+                )
             ):
+                # The drafter only exists on the last PP rank (see __init__).
+                # Without this gate, _dummy_run on PP rank 0 crashes with
+                # AttributeError during profile_run.
                 assert isinstance(
                     self.drafter,
                     EagleProposer
