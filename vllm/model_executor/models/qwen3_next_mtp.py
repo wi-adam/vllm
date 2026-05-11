@@ -9,7 +9,6 @@ from torch import nn
 
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import VllmConfig
-from vllm.distributed.parallel_state import get_pp_group
 from vllm.logger import init_logger
 from vllm.model_executor.layers.fused_moe import (
     fused_moe_make_expert_params_mapping,
@@ -29,6 +28,7 @@ from vllm.model_executor.models.qwen3_next import (
 from vllm.sequence import IntermediateTensors
 from vllm.transformers_utils.configs.qwen3_next import Qwen3NextConfig
 
+from .interfaces import SupportsPP
 from .utils import (
     AutoWeightsLoader,
     is_pp_missing_parameter,
@@ -106,19 +106,20 @@ class Qwen3NextMultiTokenPredictor(nn.Module):
         inputs_embeds: torch.Tensor | None = None,
         spec_step_idx: int = 0,
     ) -> torch.Tensor:
-        if get_pp_group().is_first_rank:
-            if inputs_embeds is None:
-                inputs_embeds = self.embed_input_ids(input_ids)
-            assert hidden_states.shape[-1] == inputs_embeds.shape[-1]
-            inputs_embeds = self.pre_fc_norm_embedding(inputs_embeds)
-            hidden_states = self.pre_fc_norm_hidden(hidden_states)
-            hidden_states = torch.cat([inputs_embeds, hidden_states], dim=-1)
-            hidden_states = self.fc(hidden_states)
-            residual = None
-        else:
-            assert intermediate_tensors is not None
-            hidden_states = intermediate_tensors["hidden_states"]
-            residual = intermediate_tensors["residual"]
+        # MTP draft runs end-to-end on a single PP rank. The runner gates
+        # self.drafter creation to is_last_rank (gpu_model_runner.py), so
+        # this forward never participates in cross-stage handoff. Earlier
+        # PP-rank branching was a latent bug: on PP=2 last rank,
+        # is_first_rank=False would skip the FC fusion and assert on a
+        # missing intermediate_tensors.
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_input_ids(input_ids)
+        assert hidden_states.shape[-1] == inputs_embeds.shape[-1]
+        inputs_embeds = self.pre_fc_norm_embedding(inputs_embeds)
+        hidden_states = self.pre_fc_norm_hidden(hidden_states)
+        hidden_states = torch.cat([inputs_embeds, hidden_states], dim=-1)
+        hidden_states = self.fc(hidden_states)
+        residual = None
 
         current_step_idx = spec_step_idx % self.num_mtp_layers
         hidden_states, residual = self.layers[current_step_idx](
@@ -126,11 +127,6 @@ class Qwen3NextMultiTokenPredictor(nn.Module):
             hidden_states=hidden_states,
             residual=residual,
         )
-
-        if not get_pp_group().is_last_rank:
-            return IntermediateTensors(
-                {"hidden_states": hidden_states, "residual": residual}
-            )
 
         hidden_states, _ = self.norm(hidden_states, residual)
         return hidden_states
@@ -222,7 +218,7 @@ class Qwen3NextMultiTokenPredictor(nn.Module):
 
 
 @support_torch_compile
-class Qwen3NextMTP(nn.Module, QwenNextMixtureOfExperts):
+class Qwen3NextMTP(nn.Module, SupportsPP, QwenNextMixtureOfExperts):
     packed_modules_mapping = {
         "qkv_proj": [
             "q_proj",
@@ -256,6 +252,12 @@ class Qwen3NextMTP(nn.Module, QwenNextMixtureOfExperts):
             prefix=maybe_prefix(prefix, "lm_head"),
         )
         self.logits_processor = LogitsProcessor(config.vocab_size)
+        # Required by SupportsPP. The runner gates drafter creation to the
+        # last PP rank so this is never actually invoked, but the engine's
+        # is_pp_supported_model check inspects this attribute.
+        self.make_empty_intermediate_tensors = (
+            self.model.make_empty_intermediate_tensors
+        )
         self.set_moe_parameters()
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
