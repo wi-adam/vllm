@@ -186,6 +186,23 @@ class EngineCore:
         # schedule and execute batches, and is required by pipeline parallelism
         # to eliminate pipeline bubbles.
         self.batch_queue_size = self.model_executor.max_concurrent_batches
+        if (
+            self.batch_queue_size > 1
+            and self.use_spec_decode
+            and not vllm_config.scheduler_config.async_scheduling
+            and vllm_config.parallel_config.pipeline_parallel_size > 1
+        ):
+            # Non-async speculative decoding needs draft tokens from the just
+            # completed batch before the scheduler can safely form the next
+            # batch. The PP batch queue intentionally schedules ahead, which
+            # works for ordinary PP but can starve MTP+PP on the draft-token
+            # handoff path.
+            logger.warning(
+                "Disabling pipeline-parallel batch queue for non-async "
+                "speculative decoding; enable async scheduling to pipeline "
+                "speculative batches."
+            )
+            self.batch_queue_size = 1
         self.batch_queue: (
             deque[tuple[Future[ModelRunnerOutput], SchedulerOutput, Future[Any]]] | None
         ) = None
