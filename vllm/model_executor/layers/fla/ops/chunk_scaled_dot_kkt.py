@@ -83,7 +83,17 @@ def chunk_scaled_dot_kkt_fwd_kernel(
         )
         b_k = tl.load(p_k, boundary_check=(0, 1))
         b_kb = b_k * b_beta[:, None]
-        b_A += tl.dot(b_kb, tl.trans(b_k).to(b_kb.dtype))
+        # NOTE(rocm): upstream PR #42076 changed this to
+        #   tl.dot(b_kb, tl.trans(b_k).to(b_kb.dtype))
+        # to align operand layout with Hopper WGMMA. On AMD RDNA4 (gfx1201)
+        # that operand pattern triggers a pathological LLVM
+        # VOPDPairingMutation scheduler pass in the AMDGPU backend that
+        # never completes (compile hangs >25 min at 100% CPU per kernel
+        # config; first-startup autotune of all 27 configs is unbounded).
+        # Reverting to the pre-#42076 form on AMD restores fast compile.
+        # The "Hopper precision fix" is a no-op on AMD because we don't
+        # use WGMMA; both forms produce equivalent bf16/fp16 dot output.
+        b_A += tl.dot(b_kb.to(b_k.dtype), tl.trans(b_k))
 
     if USE_G:
         p_g = tl.make_block_ptr(g + bos * H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
