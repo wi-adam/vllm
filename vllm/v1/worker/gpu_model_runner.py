@@ -2294,8 +2294,13 @@ class GPUModelRunner(
                 cm.slot_mapping = slot_mappings[kv_cache_gid]
 
             if self.speculative_config and spec_decode_common_attn_metadata is None:
-                if isinstance(self.drafter, (EagleProposer, DFlashProposer)):
-                    if self.drafter.kv_cache_gid == kv_cache_gid:
+                # self.drafter only exists on the last PP rank (see __init__).
+                # On other PP ranks under MTP+PP we still want to capture
+                # spec_decode_common_attn_metadata so the attention layout
+                # matches across stages.
+                drafter = getattr(self, "drafter", None)
+                if isinstance(drafter, (EagleProposer, DFlashProposer)):
+                    if drafter.kv_cache_gid == kv_cache_gid:
                         spec_decode_common_attn_metadata = cm
                 else:
                     spec_decode_common_attn_metadata = cm
@@ -4131,11 +4136,7 @@ class GPUModelRunner(
             self.kv_connector_output = None
             # receive sampled token ids from the last PP rank.
             pp = get_pp_group()
-            if (
-                self.use_async_scheduling
-                and pp.world_size > 1
-                and not pp.is_last_rank
-            ):
+            if self.use_async_scheduling and pp.world_size > 1 and not pp.is_last_rank:
                 self._pp_receive_prev_sampled_token_ids_to_input_batch()
             if not kv_connector_output:
                 return None  # type: ignore[return-value]
@@ -6353,9 +6354,16 @@ class GPUModelRunner(
         )
 
         # Initialize drafter's cudagraph dispatcher if using spec decode.
-        if self.speculative_config and (
-            self.speculative_config.use_eagle()
-            or self.speculative_config.uses_extract_hidden_states()
+        # The drafter only exists on the last PP rank (see __init__), so
+        # this gate prevents AttributeError on first/middle PP ranks when
+        # MTP+PP is in use.
+        if (
+            self.speculative_config
+            and get_pp_group().is_last_rank
+            and (
+                self.speculative_config.use_eagle()
+                or self.speculative_config.uses_extract_hidden_states()
+            )
         ):
             assert isinstance(
                 self.drafter,
