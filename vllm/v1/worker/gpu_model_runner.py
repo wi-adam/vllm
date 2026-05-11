@@ -1300,13 +1300,25 @@ class GPUModelRunner(
                     num_new_tokens = (
                         num_computed_tokens + len(new_token_ids) - req_state.num_tokens
                     )
-                    if num_new_tokens == 1:
+                    # Bound by actual list length: under spec-decode +
+                    # non-async PP, the scheduler can advance num_computed_tokens
+                    # by 1 for rejection bookkeeping while sending an empty
+                    # new_token_ids[i] slice (the verified token lives only on
+                    # the last PP rank). Without min() this raises IndexError
+                    # on the `new_token_ids[-1]` access at num_new_tokens==1;
+                    # the elif slice path silently masks the same condition
+                    # because [][-N:] returns []. Use a single bounded count
+                    # so both code paths handle the empty case consistently.
+                    n = (
+                        min(num_new_tokens, len(new_token_ids))
+                        if num_new_tokens > 0
+                        else 0
+                    )
+                    if n == 1:
                         # Avoid slicing list in most common case.
                         req_state.output_token_ids.append(new_token_ids[-1])
-                    elif num_new_tokens > 0:
-                        req_state.output_token_ids.extend(
-                            new_token_ids[-num_new_tokens:]
-                        )
+                    elif n > 0:
+                        req_state.output_token_ids.extend(new_token_ids[-n:])
             elif num_output_tokens < len(req_state.output_token_ids):
                 # Some output tokens were discarded due to a sync-KV-load
                 # failure, or output_token_ids was inflated by the optimistic
@@ -2347,9 +2359,7 @@ class GPUModelRunner(
             # Capture per-group block tables for multi-group proposers.
             drafter = getattr(self, "drafter", None)
             if self.speculative_config and isinstance(drafter, Gemma4Proposer):
-                drafter.set_per_group_block_table(
-                    kv_cache_gid, cm.block_table_tensor
-                )
+                drafter.set_per_group_block_table(kv_cache_gid, cm.block_table_tensor)
 
             for attn_gid in range(len(self.attn_groups[kv_cache_gid])):
                 if ubatch_slices is not None:
